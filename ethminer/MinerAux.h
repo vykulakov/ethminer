@@ -22,7 +22,6 @@
  * CLI module for mining.
  */
 
-#include <mutex>
 #include <thread>
 #include <chrono>
 #include <fstream>
@@ -593,35 +592,8 @@ public:
 			;
 	}
 
-	string getUrl()
-	{
-		return m_farmURL;
-	}
-
-	string getPort()
-	{
-		return m_port;
-	}
-
-	uint64_t getRate()
-	{
-		uint64_t rate;
-
-		m_rate_mutex.lock();
-		rate = m_rate;
-		m_rate_mutex.unlock();
-
-		return rate;
-	}
-
-	void setRate(uint64_t rate)
-	{
-		m_rate_mutex.lock();
-		m_rate = rate;
-		m_rate_mutex.unlock();
-	}
-
 private:
+
 	void doBenchmark(MinerType _m, unsigned _warmupDuration = 15, unsigned _trialDuration = 3, unsigned _trials = 5)
 	{
 		BlockHeader genesis;
@@ -817,7 +789,6 @@ private:
 					else
 						minelog << "Waiting for work package...";
 
-					setRate(mp.rate());
 					auto rate = mp.rate();
 
 					try
@@ -964,8 +935,7 @@ private:
 					{
 						minelog << "Waiting for work package...";
 					}
-
-					setRate(mp.rate());
+					
 					if (this->m_report_stratum_hashrate) {
 						auto rate = mp.rate();
 						client.submitHashrate(toJS(rate));
@@ -1012,8 +982,7 @@ private:
 					{
 						minelog << "Waiting for work package...";
 					}
-
-					setRate(mp.rate());
+					
 					if (this->m_report_stratum_hashrate) {
 						auto rate = mp.rate();
 						client.submitHashrate(toJS(rate));
@@ -1088,10 +1057,4 @@ private:
 #if ETH_DBUS
 	DBusInt dbusint;
 #endif
-
-	/// Stats custom params
-	uint64_t m_rate;
-
-	/// Mutex for custom stats
-	mutex m_rate_mutex;
 };
