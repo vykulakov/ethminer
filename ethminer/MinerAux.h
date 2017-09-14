@@ -22,7 +22,6 @@
  * CLI module for mining.
  */
 
-#include <mutex>
 #include <thread>
 #include <chrono>
 #include <fstream>
@@ -52,6 +51,9 @@
 #endif
 #if ETH_DBUS
 #include "DBusInt.h"
+#endif
+#if API_CORE
+#include <libapicore/Api.h>
 #endif
 
 using namespace std;
@@ -244,6 +246,12 @@ public:
 		}
 
 #endif
+#if API_CORE
+		else if ((arg == "--api-port") && i + 1 < argc)
+		{
+			m_api_port = atoi(argv[++i]);
+		}
+#endif
 #if ETH_ETHASHCL
 		else if (arg == "--opencl-platform" && i + 1 < argc)
 			try {
@@ -268,6 +276,19 @@ public:
 					break;
 				}
 			}
+		else if(arg == "--cl-parallel-hash" && i + 1 < argc) {
+			try {
+				m_openclThreadsPerHash = stol(argv[++i]);
+				if(m_openclThreadsPerHash != 1 && m_openclThreadsPerHash != 2 &&
+				   m_openclThreadsPerHash != 4 && m_openclThreadsPerHash != 8) {
+					BOOST_THROW_EXCEPTION(BadArgument());
+				} 
+			}
+			catch(...) {
+				cerr << "Bad " << arg << " option: " << argv[i] << endl;
+				BOOST_THROW_EXCEPTION(BadArgument());
+			}
+		}
 #endif
 #if ETH_ETHASHCL || ETH_ETHASHCUDA
 		else if ((arg == "--cl-global-work" || arg == "--cuda-grid-size")  && i + 1 < argc)
@@ -476,7 +497,8 @@ public:
 				CLMiner::setDevices(m_openclDevices, m_openclDeviceCount);
 				m_miningThreads = m_openclDeviceCount;
 			}
-
+			
+			CLMiner::setThreadsPerHash(m_openclThreadsPerHash);
 			if (!CLMiner::configureGPU(
 					m_localWorkSize,
 					m_globalWorkSizeMultiplier,
@@ -577,6 +599,7 @@ public:
 #if ETH_ETHASHCL
 			<< "    --cl-local-work Set the OpenCL local work size. Default is " << CLMiner::c_defaultLocalWorkSize << endl
 			<< "    --cl-global-work Set the OpenCL global work size as a multiple of the local work size. Default is " << CLMiner::c_defaultGlobalWorkSizeMultiplier << " * " << CLMiner::c_defaultLocalWorkSize << endl
+			<< "    --cl-parallel-hash <1 2 ..8> Define how many threads to associate per hash. Default=8" << endl
 #endif
 #if ETH_ETHASHCUDA
 			<< "    --cuda-block-size Set the CUDA block work size. Default is " << toString(ethash_cuda_miner::c_defaultBlockSize) << endl
@@ -590,38 +613,14 @@ public:
 			<< "    --cuda-devices <0 1 ..n> Select which CUDA GPUs to mine on. Default is to use all" << endl
 			<< "    --cuda-parallel-hash <1 2 ..8> Define how many hashes to calculate in a kernel, can be scaled to achieve better performance. Default=4" << endl
 #endif
+#if API_CORE
+			<< "    --api-port Set the api port, the miner should listen to. Use 0 to disable. Default=0, use negative numbers to run in readonly mode. for example -3333." << endl
+#endif
 			;
 	}
 
-	string getUrl()
-	{
-		return m_farmURL;
-	}
-
-	string getPort()
-	{
-		return m_port;
-	}
-
-	uint64_t getRate()
-	{
-		uint64_t rate;
-
-		m_rate_mutex.lock();
-		rate = m_rate;
-		m_rate_mutex.unlock();
-
-		return rate;
-	}
-
-	void setRate(uint64_t rate)
-	{
-		m_rate_mutex.lock();
-		m_rate = rate;
-		m_rate_mutex.unlock();
-	}
-
 private:
+
 	void doBenchmark(MinerType _m, unsigned _warmupDuration = 15, unsigned _trialDuration = 3, unsigned _trials = 5)
 	{
 		BlockHeader genesis;
@@ -665,7 +664,6 @@ private:
 			this_thread::sleep_for(chrono::seconds(i ? _trialDuration : _warmupDuration));
 
 			auto mp = f.miningProgress();
-			f.resetMiningProgress();
 			if (!i)
 				continue;
 			auto rate = mp.rate();
@@ -731,7 +729,6 @@ private:
 			for (unsigned i = 0; !completed; ++i)
 			{
 				auto mp = f.miningProgress();
-				f.resetMiningProgress();
 
 				cnote << "Mining on difficulty " << difficulty << " " << mp;
 				this_thread::sleep_for(chrono::milliseconds(1000));
@@ -786,11 +783,22 @@ private:
 
 		h256 id = h256::random();
 		Farm f;
+		
+#if API_CORE
+		Api api(this->m_api_port, f);
+#endif
+		
 		f.setSealers(sealers);
+
 		if (_m == MinerType::CL)
 			f.start("opencl", false);
 		else if (_m == MinerType::CUDA)
 			f.start("cuda", false);
+		else if (_m == MinerType::Mixed) {
+			f.start("cuda", false);
+			f.start("opencl", true);
+		}
+
 		WorkPackage current;
 		std::mutex x_current;
 		while (m_running)
@@ -806,10 +814,9 @@ private:
 				for (unsigned i = 0; !completed; ++i)
 				{
 					auto mp = f.miningProgress();
-					f.resetMiningProgress();
 					if (current)
 					{
-						minelog << mp << f.getSolutionStats();
+						minelog << mp << f.getSolutionStats() << f.farmLaunchedFormatted();
 #if ETH_DBUS
 						dbusint.send(toString(mp).data());
 #endif
@@ -817,7 +824,6 @@ private:
 					else
 						minelog << "Waiting for work package...";
 
-					setRate(mp.rate());
 					auto rate = mp.rate();
 
 					try
@@ -919,7 +925,11 @@ private:
 			m_farmRecheckPeriod = m_defaultStratumFarmRecheckPeriod;
 
 		Farm f;
-
+		
+#if API_CORE
+		Api api(this->m_api_port, f);
+#endif
+	
 		// this is very ugly, but if Stratum Client V2 tunrs out to be a success, V1 will be completely removed anyway
 		if (m_stratumClientVersion == 1) {
 			EthStratumClient client(&f, m_minerType, m_farmURL, m_port, m_user, m_pass, m_maxFarmRetries, m_worktimeout, m_stratumProtocol, m_email);
@@ -946,16 +956,18 @@ private:
 				}
 				return false;
 			});
+			f.onMinerRestart([&](){ 
+				client.reconnect();
+			});
 
 			while (client.isRunning())
 			{
 				auto mp = f.miningProgress();
-				f.resetMiningProgress();
 				if (client.isConnected())
 				{
 					if (client.current())
 					{
-						minelog << mp << f.getSolutionStats();
+						minelog << mp << f.getSolutionStats() << f.farmLaunchedFormatted();
 #if ETH_DBUS
 						dbusint.send(toString(mp).data());
 #endif
@@ -964,8 +976,7 @@ private:
 					{
 						minelog << "Waiting for work package...";
 					}
-
-					setRate(mp.rate());
+					
 					if (this->m_report_stratum_hashrate) {
 						auto rate = mp.rate();
 						client.submitHashrate(toJS(rate));
@@ -994,11 +1005,13 @@ private:
 				client.submit(sol);
 				return false;
 			});
+			f.onMinerRestart([&](){ 
+				client.reconnect();
+			});
 
 			while (client.isRunning())
 			{
 				auto mp = f.miningProgress();
-				f.resetMiningProgress();
 				if (client.isConnected())
 				{
 					if (client.current())
@@ -1012,8 +1025,7 @@ private:
 					{
 						minelog << "Waiting for work package...";
 					}
-
-					setRate(mp.rate());
+					
 					if (this->m_report_stratum_hashrate) {
 						auto rate = mp.rate();
 						client.submitHashrate(toJS(rate));
@@ -1038,6 +1050,7 @@ private:
 #if ETH_ETHASHCL
 	unsigned m_openclDeviceCount = 0;
 	unsigned m_openclDevices[16];
+	unsigned m_openclThreadsPerHash = 8;
 #if !ETH_ETHASHCUDA
 	unsigned m_globalWorkSizeMultiplier = CLMiner::c_defaultGlobalWorkSizeMultiplier;
 	unsigned m_localWorkSize = CLMiner::c_defaultLocalWorkSize;
@@ -1071,6 +1084,9 @@ private:
 	unsigned m_defaultStratumFarmRecheckPeriod = 2000;
 	bool m_farmRecheckSet = false;
 	int m_worktimeout = 180;
+#if API_CORE
+	int m_api_port = 0;
+#endif	
 
 #if ETH_STRATUM
 	bool m_report_stratum_hashrate = false;
@@ -1088,10 +1104,4 @@ private:
 #if ETH_DBUS
 	DBusInt dbusint;
 #endif
-
-	/// Stats custom params
-	uint64_t m_rate;
-
-	/// Mutex for custom stats
-	mutex m_rate_mutex;
 };
