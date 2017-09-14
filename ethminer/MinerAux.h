@@ -785,7 +785,7 @@ private:
 		Farm f;
 		
 #if API_CORE
-		Api api(this->m_api_port, f);
+		Api api(this->m_api_port, f, this->m_farmURL, this->m_port);
 #endif
 		
 		f.setSealers(sealers);
@@ -927,7 +927,7 @@ private:
 		Farm f;
 		
 #if API_CORE
-		Api api(this->m_api_port, f);
+		Api api(this->m_api_port, f, this->m_farmURL, this->m_port);
 #endif
 	
 		// this is very ugly, but if Stratum Client V2 tunrs out to be a success, V1 will be completely removed anyway
