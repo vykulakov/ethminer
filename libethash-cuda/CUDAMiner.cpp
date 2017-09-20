@@ -189,6 +189,7 @@ void CUDAMiner::workLoop()
 		delete m_miner;
 		m_miner = nullptr;
 		cwarn << "Error CUDA mining: " << _e.what();
+		exit(EXIT_FAILURE);
 	}
 }
 
